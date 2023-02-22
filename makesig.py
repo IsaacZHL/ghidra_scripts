@@ -1,5 +1,5 @@
-#Generates a SourceMod-ready signature.
-#@author nosoop
+#Generates a ZHL-ready signature.
+#@author nosoop, IsaacZHL team
 #@category _NEW_
 #@keybinding 
 #@menupath 
@@ -24,8 +24,8 @@ def __bytepattern_ida_str(self):
 	return '{:02X}'.format(self.byte) if not self.is_wildcard else '?'
 
 def __bytepattern_sig_str(self):
-	# return a SourceMod-style byte signature
-	return r'\x{:02X}'.format(self.byte) if not self.is_wildcard else r'\x2A'
+	# return a ZHL-style byte signature
+	return '{:02X}'.format(self.byte).lower() if not self.is_wildcard else '??'
 
 BytePattern.ida_str = __bytepattern_ida_str
 BytePattern.sig_str = __bytepattern_sig_str
