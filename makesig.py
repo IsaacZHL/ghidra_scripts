@@ -8,7 +8,6 @@
 from __future__ import print_function
 
 import collections
-from ghidra.framework import Application
 import ghidra.program.model.lang.OperandType as OperandType
 import ghidra.program.model.lang.Register as Register
 import ghidra.program.model.address.AddressSet as AddressSet
@@ -94,7 +93,8 @@ def process(start_at = MAKE_SIG_AT['fn'], min_length = 1):
 			# it will throw on older versions, so fall back to the previous version
 			ins = cm.getInstructionContaining(currentAddress, False)
 		except TypeError:
-			ins = cm.getInstructionContaining(currentAddress)            
+			ins = cm.getInstructionContaining(currentAddress)    
+            
 	if not ins:
 		raise Exception("Could not find entry point to function")
 
@@ -155,6 +155,7 @@ if __name__ == "__main__":
 		printerr("Not in a function")
 	else:
 		start_at = askChoice("makesig", "Make sig at:", MAKE_SIG_AT.values(), MAKE_SIG_AT['fn'])
+        
 		# we currently don't expose min_length
 		# TODO: rework askChoice to use a custom panel with all options
 		process(start_at, min_length = 1)
