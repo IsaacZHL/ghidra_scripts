@@ -1,5 +1,5 @@
 #Generates a ZHL-ready signature.
-#@author nosoop, IsaacZHL team
+#@author nosoop, REPENTOGON team
 #@category _NEW_
 #@keybinding 
 #@menupath 
@@ -8,6 +8,7 @@
 from __future__ import print_function
 
 import collections
+from ghidra.framework import Application
 import ghidra.program.model.lang.OperandType as OperandType
 import ghidra.program.model.lang.Register as Register
 import ghidra.program.model.address.AddressSet as AddressSet
@@ -88,7 +89,10 @@ def process(start_at = MAKE_SIG_AT['fn']):
 	if start_at == MAKE_SIG_AT['fn']:
 		ins = cm.getInstructionAt(fn.getEntryPoint())
 	elif start_at == MAKE_SIG_AT['cursor']:
-		ins = cm.getInstructionContaining(currentAddress)
+		if Application.getApplicationVersion().split(".")[0] < 11:
+			ins = cm.getInstructionContaining(currentAddress)
+		else:
+			ins = cm.getInstructionContaining(currentAddress, False)
 	
 	if not ins:
 		raise Exception("Could not find entry point to function")
