@@ -81,7 +81,7 @@ def cleanupWilds(byte_pattern):
 			break
 		del byte_pattern[-1]
 
-def process(start_at = MAKE_SIG_AT['fn']):
+def process(start_at = MAKE_SIG_AT['fn'], min_length = 1):
 	fm = currentProgram.getFunctionManager()
 	fn = fm.getFunctionContaining(currentAddress)
 	cm = currentProgram.getCodeManager()
@@ -89,11 +89,12 @@ def process(start_at = MAKE_SIG_AT['fn']):
 	if start_at == MAKE_SIG_AT['fn']:
 		ins = cm.getInstructionAt(fn.getEntryPoint())
 	elif start_at == MAKE_SIG_AT['cursor']:
-		if Application.getApplicationVersion().split(".")[0] < 11:
-			ins = cm.getInstructionContaining(currentAddress)
-		else:
+		try:
+			# Ghidra 10.4 introduces an additional parameter 'usePrototypeLength'
+			# it will throw on older versions, so fall back to the previous version
 			ins = cm.getInstructionContaining(currentAddress, False)
-	
+		except TypeError:
+			ins = cm.getInstructionContaining(currentAddress)            
 	if not ins:
 		raise Exception("Could not find entry point to function")
 
@@ -120,6 +121,9 @@ def process(start_at = MAKE_SIG_AT['fn']):
 			for _ in range(ins.getAddress().subtract(expected_next)):
 				byte_pattern.append(BytePattern(is_wildcard = True, byte = None))
 				pattern += '.'
+		
+		if len(byte_pattern) < min_length:
+			continue
 		
 		if 0 < len(matches) < match_limit:
 			# we have all the remaining matches, start only searching those addresses
@@ -151,4 +155,6 @@ if __name__ == "__main__":
 		printerr("Not in a function")
 	else:
 		start_at = askChoice("makesig", "Make sig at:", MAKE_SIG_AT.values(), MAKE_SIG_AT['fn'])
-		process(start_at)
+		# we currently don't expose min_length
+		# TODO: rework askChoice to use a custom panel with all options
+		process(start_at, min_length = 1)
