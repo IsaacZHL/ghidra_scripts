@@ -138,15 +138,29 @@ def process(start_at = MAKE_SIG_AT['fn'], min_length = 1):
 		if len(matches) < 2:
 			break
 	
+	cleanupWilds(byte_pattern)
+	print("Signature for", fn.getName())
+	print(*(b.ida_str() for b in byte_pattern))
+	print("".join(b.sig_str() for b in byte_pattern))
 	if not len(matches) == 1:
-		print(*(b.ida_str() for b in byte_pattern))
 		print('Signature matched', len(matches), 'locations:', *(matches))
 		printerr("Could not find unique signature")
 	else:
-		cleanupWilds(byte_pattern)
-		print("Signature for", fn.getName())
-		print(*(b.ida_str() for b in byte_pattern))
-		print("".join(b.sig_str() for b in byte_pattern))
+		if start_at == MAKE_SIG_AT['fn']:
+			print("---ZHL func prototype START---")
+			print("")
+			# parse params
+			paramstring = ""
+			for param in fn.getParameters():
+				if param.getName() != "this":
+					if len(paramstring) > 1:
+						paramstring = paramstring + ", " 
+					paramstring = paramstring + param.	getFormalDataType().getDisplayName() + " " + param.getName()
+			# parse params end
+			print('"'+"".join(b.sig_str() for b in byte_pattern)+'":')
+			print(fn.getCallingConventionName() + " " + fn.getReturnType().getDisplayName() + " " + fn.getParentNamespace().getName() + "::" + fn.getName() + "(" + paramstring + ");")
+			print("")
+			print("---ZHL func prototype END---")
 
 if __name__ == "__main__":
 	fm = currentProgram.getFunctionManager()
