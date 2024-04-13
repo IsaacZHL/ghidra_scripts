@@ -15,6 +15,7 @@ import ghidra.program.model.address.AddressSet as AddressSet
 MAKE_SIG_AT = collections.OrderedDict([
 	('fn', 'start of function'),
 	('cursor', 'instruction at cursor')
+	#('namespc', 'entire class/namespc(zhl)')
 ])
 
 BytePattern = collections.namedtuple('BytePattern', ['is_wildcard', 'byte'])
@@ -105,7 +106,7 @@ def process(start_at = MAKE_SIG_AT['fn'], min_length = 1):
 	matches = []
 	match_limit = 128
 	
-	while fm.getFunctionContaining(ins.getAddress()) == fn:
+	while True: #do it till its unique, even if it goes beyond the function, fuck it! # fm.getFunctionContaining(ins.getAddress()) == fn:
 		for entry in getMaskedInstruction(ins):
 			byte_pattern.append(entry)
 			if entry.is_wildcard:
