@@ -11,11 +11,14 @@ import collections
 import ghidra.program.model.lang.OperandType as OperandType
 import ghidra.program.model.lang.Register as Register
 import ghidra.program.model.address.AddressSet as AddressSet
+from ghidra.program.model.symbol import SymbolType
+from ghidra.program.model.data import Pointer
+from ghidra.program.database.data import ArrayDB
 
 MAKE_SIG_AT = collections.OrderedDict([
 	('fn', 'start of function'),
-	('cursor', 'instruction at cursor')
-	#('namespc', 'entire class/namespc(zhl)')
+	('cursor', 'instruction at cursor'),
+	('namespc', 'entire class/namespc(zhl)')
 ])
 
 BytePattern = collections.namedtuple('BytePattern', ['is_wildcard', 'byte'])
@@ -81,11 +84,16 @@ def cleanupWilds(byte_pattern):
 			break
 		del byte_pattern[-1]
 
-def process(start_at = MAKE_SIG_AT['fn'], min_length = 1):
-	fm = currentProgram.getFunctionManager()
-	fn = fm.getFunctionContaining(currentAddress)
-	cm = currentProgram.getCodeManager()
 
+def parsefuncdeftype(str):
+	if str == "uint":
+		return "uint32_t"
+	elif (str == "string") or (str == "String"):
+		return "std_string"
+	return str
+	
+def processfunc(fn, start_at = MAKE_SIG_AT['fn'], min_length = 1, zhlonly = True):
+	cm = currentProgram.getCodeManager()
 	if start_at == MAKE_SIG_AT['fn']:
 		ins = cm.getInstructionAt(fn.getEntryPoint())
 	elif start_at == MAKE_SIG_AT['cursor']:
@@ -140,28 +148,90 @@ def process(start_at = MAKE_SIG_AT['fn'], min_length = 1):
 			break
 	
 	cleanupWilds(byte_pattern)
-	print("Signature for", fn.getName())
-	print(*(b.ida_str() for b in byte_pattern))
-	print("".join(b.sig_str() for b in byte_pattern))
+	if not zhlonly:
+		print("Signature for", fn.getName())
+		print(*(b.ida_str() for b in byte_pattern))
+		print("".join(b.sig_str() for b in byte_pattern))
 	if not len(matches) == 1:
-		print('Signature matched', len(matches), 'locations:', *(matches))
-		printerr("Could not find unique signature")
+		if not zhlonly:
+			print('Signature matched', len(matches), 'locations:', *(matches))
+			printerr("Could not find unique signature")
 	else:
 		if start_at == MAKE_SIG_AT['fn']:
-			print("---ZHL func prototype START---")
-			print("")
+			if not zhlonly:
+				print("---ZHL func prototype START---")
+				print("")
 			# parse params
 			paramstring = ""
 			for param in fn.getParameters():
 				if param.getName() != "this":
 					if len(paramstring) > 1:
 						paramstring = paramstring + ", " 
-					paramstring = paramstring + param.	getFormalDataType().getDisplayName() + " " + param.getName()
+					paramstring = paramstring + parsefuncdeftype(param.getFormalDataType().getDisplayName()) + " " + param.getName()
 			# parse params end
 			print('"'+"".join(b.sig_str() for b in byte_pattern)+'":')
-			print(fn.getCallingConventionName() + " " + fn.getReturnType().getDisplayName() + " " + fn.getParentNamespace().getName() + "::" + fn.getName() + "(" + paramstring + ");")
+			print(fn.getCallingConventionName() + " " + parsefuncdeftype(fn.getReturnType().getDisplayName()) + " " + fn.getParentNamespace().getName() + "::" + fn.getName() + "(" + paramstring + ");")
 			print("")
-			print("---ZHL func prototype END---")
+			if not zhlonly:
+				print("---ZHL func prototype END---")
+
+def isStructureDataType(dataType):
+    return dataType.getDataTypeClass() == DataTypeClass.STRUCTURE
+
+def isPointerDataType(dataType):
+    return isinstance(dataType, Pointer)
+
+def processdatatype(nmspc):
+	dtman = currentProgram.getDataTypeManager()
+	structures = dtman.getAllStructures()
+	for structure in structures:
+		if structure.getName() == nmspc.getName():
+			depends = ""
+			print("")
+			#for idx in range(structure.getNumComponents()): #iterating these twice because im lazy(its pretty damn fast anyway, the slow thing is getting the sigs)
+			#	cmp = structure.getComponent(idx)
+			#	if cmp.getFieldName():
+			#		cmp = structure.getComponent(idx)
+			#		if depends == "":
+			#			depends = " depends ("
+			#		else:
+			#			depends = depends + ","
+			#		
+			#		if isinstance(cmp.getDataType(), ArrayDB):
+			#			depends = depends + " " + cmp.getDataType().getName()
+			#		elif isPointerDataType(cmp.getDataType()) or isStructureDataType(cmp.getDataType()):
+			#			depends = depends + " " + cmp.getDataType().getName()
+			if not (depends == ""):
+				depends = depends + ")"
+			print("")			
+			print("struct " + nmspc.getName() + depends + " {")
+			idx = 0
+			for idx in range(structure.getNumComponents()):
+				cmp = structure.getComponent(idx)
+				if cmp.getFieldName():
+					print("	" + parsefuncdeftype(cmp.getDataType().getName()) + " " + cmp.getFieldName() + " : " + hex(cmp.getOffset()) + ";")
+				idx = idx + 1
+			print("} : " + hex(structure.getLength()) + ";")
+			return
+
+def process(start_at=MAKE_SIG_AT['fn'], min_length=1):
+	fm = currentProgram.getFunctionManager()
+	fn = fm.getFunctionContaining(currentAddress)
+	
+	if start_at == MAKE_SIG_AT['namespc']:
+		nmspc = fn.getParentNamespace()
+		symtab = currentProgram.getSymbolTable()
+		functions = symtab.getSymbols(nmspc) #currentProgram.getFunctionManager().getFunctions(True)
+		for fn in functions:
+			if fn.getSymbolType().toString() == "Function": #fn.getParentNamespace() == nmspc:
+				fn = fm.getReferencedFunction(fn.getAddress())
+				processfunc(fn)
+		processdatatype(nmspc)
+	else:
+		processfunc(fn, start_at, min_length, False)
+
+
+
 
 if __name__ == "__main__":
 	fm = currentProgram.getFunctionManager()
