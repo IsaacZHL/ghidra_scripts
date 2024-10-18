@@ -7,6 +7,9 @@
 
 from __future__ import print_function
 
+import os
+import re
+import json
 import collections
 import ghidra.program.model.lang.OperandType as OperandType
 import ghidra.program.model.lang.Register as Register
@@ -15,10 +18,25 @@ from ghidra.program.model.symbol import SymbolType
 from ghidra.program.model.data import Pointer
 from ghidra.program.database.data import ArrayDB
 
+from ghidra.program.model.listing import Function
+from ghidra.program.model.symbol import SymbolTable, SourceType
+from ghidra.program.model.address import Address
+from ghidra.util.exception import InvalidInputException
+from ghidra.program.model.mem import MemoryAccessException
+from ghidra.util.task import TaskMonitor
+from jarray import zeros  # Import 'zeros' to create Java byte arrays
+
+
+zhlfunctionspath = r'C:\Users\Juan\Documents\GitHub\IsaacZHL\libzhl\functions' #set up your zhl functions dir
+countfuncfails = 0
+countfuncsucksex = 0
+
 MAKE_SIG_AT = collections.OrderedDict([
-	('fn', 'start of function'),
-	('cursor', 'instruction at cursor'),
-	('namespc', 'entire class/namespc(zhl)')
+	('fn', 'Sig at the start of function'),
+	('cursor', 'Sig at instruction at cursor'),
+	('namespc', 'Parse entire class/namespc(zhl)'),
+	('zhlcheckup', 'Import ZHL functions/namespaces'),
+	('regclass', 'lurk lua refs (RegisterClasses) [UNFINISHED]')
 ])
 
 BytePattern = collections.namedtuple('BytePattern', ['is_wildcard', 'byte'])
@@ -218,7 +236,10 @@ def process(start_at=MAKE_SIG_AT['fn'], min_length=1):
 	fm = currentProgram.getFunctionManager()
 	fn = fm.getFunctionContaining(currentAddress)
 	
-	if start_at == MAKE_SIG_AT['namespc']:
+	if start_at == MAKE_SIG_AT['regclass']:
+		process_registerclasses(fn)
+	
+	elif start_at == MAKE_SIG_AT['namespc']:
 		nmspc = fn.getParentNamespace()
 		symtab = currentProgram.getSymbolTable()
 		functions = symtab.getSymbols(nmspc) #currentProgram.getFunctionManager().getFunctions(True)
@@ -232,15 +253,416 @@ def process(start_at=MAKE_SIG_AT['fn'], min_length=1):
 
 
 
+#registerclasses shit
+def get_string_at_address(address):
+    """Returns the string at a given address."""
+    data = getDataAt(address)
+    if data and data.hasStringValue():
+        return data.getValue()
+    return None
+
+def get_function_at_address(address):
+    """Returns the function at a given address."""
+    function_manager = currentProgram.getFunctionManager()
+    return function_manager.getFunctionContaining(address)
+
+def generate_signature(function):
+    """Generates a unique signature for a given function."""
+    instructions = []
+    instruction = getInstructionAt(function.getEntryPoint())
+    while instruction and function.getBody().contains(instruction.getAddress()):
+        instructions.append(instruction)
+        instruction = instruction.getNext()
+
+    signature = []
+    for ins in instructions:
+        for entry in getMaskedInstruction(ins):
+            if entry.is_wildcard:
+                signature.append('??')
+            else:
+                signature.append('{:02x}'.format(entry.byte))
+    
+    return ' '.join(signature)
+
+def process_registerclasses(fn):
+    """Processes a function to pair strings with their related function calls."""
+    instruction = getInstructionAt(fn.getEntryPoint())
+
+    while instruction and fn.getBody().contains(instruction.getAddress()):
+        if instruction.getMnemonicString() == "MOV" and instruction.getNumOperands() > 1:
+			#string followed by function
+            if instruction.getOperandType(1) & OperandType.ADDRESS:
+                string_address = instruction.getAddress(1)
+                if string_address:
+                    string_value = get_string_at_address(string_address)
+                    if string_value:
+                        next_instruction = instruction.getNext()
+                        if next_instruction and next_instruction.getMnemonicString() == "PUSH":
+                            func_address = next_instruction.getAddress(0)
+                            if func_address:
+                                func = get_function_at_address(func_address)
+                                if func:
+                                    signature = generate_signature(func)
+                                    print("{} -> {} \n".format(string_value, signature, func.getName()))
+        instruction = instruction.getNext()
+	
+	instruction = getInstructionAt(fn.getEntryPoint())
+	while instruction and fn.getBody().contains(instruction.getAddress()):
+		if instruction.getMnemonicString() == "PUSH" and instruction.getNumOperands() > 0:
+				#function followed by string
+				func_address = instruction.getAddress(0)
+				if func_address:
+					func = get_function_at_address(func_address)
+					if func:
+						next_instruction = instruction.getNext()
+						if next_instruction and next_instruction.getMnemonicString() == "PUSH":
+							string_address = next_instruction.getAddress(0)
+							if string_address:
+								string_value = get_string_at_address(string_address)
+								if string_value:
+									signature = generate_signature(func)
+									print("{} -> {} \n".format(string_value, signature, func.getName()))
+		instruction = instruction.getNext()
+
+    #return results
+
+#registerclasses shit
+
+
+#zhl func registering shenanigans
+#magical regex that grabs all the shit
+patterns = {
+    'function_signature': re.compile(r'"([0-9a-fA-F?]+)":\s*(?:(__\w+)\s+)?([\w*]+)\s+([\w*]+)::([\w*]+)\(([^)]*)\);') 
+}
+
+currfuncparams = 0
+
+def twos_complement_array_to_decimal(arr):
+    """
+    Convert an array of signed integers to their unsigned equivalents based on 2's complement.
+
+    :param arr: List of signed integers.
+    :param bit_width: The number of bits in the 2's complement representation (e.g., 8 for bytes).
+    :return: A list of unsigned integers.
+    """
+    result = []
+    max_value = 1 << 8  # 2^bit_width
+
+    for value in arr:
+        if value < 0:
+            # Convert the signed integer to an unsigned equivalent
+            value = max_value + value
+        result.append(value)
+
+    return result
+
+
+def find_function_address(signature):
+    """
+    Searches for a function by matching its byte signature at function entry points.
+    """
+    # Convert the signature from string format to a list of bytes
+    byte_list = []
+    for i in range(0, len(signature), 2):
+        byte_str = signature[i:i+2]
+        if byte_str == '??':
+            byte_list.append(-1)  # Use -1 to represent wildcard
+        else:
+            try:
+                byte_list.append(int(byte_str, 16))
+            except ValueError:
+                print("Invalid byte string:", byte_str)
+                return None
+
+    # Get the current program, function manager, and memory
+    program = currentProgram
+    function_manager = program.getFunctionManager()
+    memory = program.getMemory()
+
+    #print("Starting signature search for:", signature)
+    #print("Parsed byte list (with wildcards):", byte_list)
+
+    # Iterate over functions in the current program
+    for function in function_manager.getFunctionsNoStubs(True):
+        entry_point = function.getEntryPoint()
+
+        try:
+            # Read only the number of bytes needed for the signature
+            func_bytes =  zeros(len(byte_list), 'b')  # Create a buffer for the bytes
+            bytes_read = memory.getBytes(entry_point, func_bytes)
+            func_bytes = twos_complement_array_to_decimal(func_bytes) #fuck you ghidra, fuck you!
+
+            if bytes_read != len(byte_list):
+                print("Error reading memory: not enough bytes at", entry_point)
+                continue
+
+            #print("Function: ", function.getName() ," at address:", entry_point, "Function bytes:", list(func_bytes))
+            # Compare the function's entry bytes with the signature
+            if matches_signature(func_bytes, byte_list):
+                #print("Signature matched at function starting at:", entry_point)
+                return entry_point  # Return the function's entry point address
+        except MemoryAccessException as e:
+            print("Error reading memory at address:", entry_point, "-", str(e))
+            continue  # Skip if there's an error reading memory
+
+    #print("!!!No matching function found for signature:", signature)
+    return signature  # Return None if no function is found
+
+
+def find_closest_function_address(signature,targetname,targetclassname):
+    """
+    Searches for a function by matching its byte signature at function entry points.
+    """
+    # Convert the signature from string format to a list of bytes
+    byte_list = []
+    for i in range(0, len(signature), 2):
+        byte_str = signature[i:i+2]
+        if byte_str == '??':
+            byte_list.append(-1)  # Use -1 to represent wildcard
+        else:
+            try:
+                byte_list.append(int(byte_str, 16))
+            except ValueError:
+                print("Invalid byte string:", byte_str)
+                return None
+
+    # Get the current program, function manager, and memory
+    program = currentProgram
+    function_manager = program.getFunctionManager()
+    memory = program.getMemory()
+
+    #print("Starting signature search for:", signature)
+    #print("Parsed byte list (with wildcards):", byte_list)
+
+    potfunc = None
+    minfails = 9999999
+    potfuncname = "funkname"
+    for function in function_manager.getFunctionsNoStubs(True):
+        entry_point = function.getEntryPoint()
+
+        try:
+            # Read only the number of bytes needed for the signature
+            func_bytes =  zeros(len(byte_list), 'b')  # Create a buffer for the bytes
+            bytes_read = memory.getBytes(entry_point, func_bytes)
+            func_bytes = twos_complement_array_to_decimal(func_bytes) #fuck you ghidra, fuck you!
+            	
+            if bytes_read != len(byte_list):
+                print("Error reading memory: not enough bytes at", entry_point)
+                continue
+            
+            #print("Function: ", function.getName() ," at address:", entry_point, "Function bytes:", list(func_bytes))
+            # Compare the function's entry bytes with the signature
+            currfails = matches_signature_num_fails(func_bytes, byte_list)
+            currfails = currfails + abs(currfuncparams - function.getParameterCount())
+            if currfails < minfails:
+                #print("Signature matched at function starting at:", entry_point)
+                minfails = currfails
+                potfunc = entry_point
+                potfuncname = function.getName()
+                # Return the function's entry point address
+			
+        except MemoryAccessException as e:
+            print("Error reading memory at address:", entry_point, "-", str(e))
+            continue  # Skip if there's an error reading memory
+	
+    print("Couldnt find:",targetclassname+"::"+targetname,"==closest==>", potfuncname , "("+ str(minfails), "mismatches)")
+    return potfunc  # Return None if no function is found
+
+def matches_signature(func_bytes, signature_bytes):
+    """
+    Compares the function's bytes to the signature with wildcards (byte_list containing -1).
+    """
+    #print("Matching function bytes:", list(func_bytes), "with signature:", signature_bytes)
+    
+    # Compare each byte of the function to the signature
+    for i in range(len(signature_bytes)):
+        if signature_bytes[i] != -1 and func_bytes[i] != signature_bytes[i]:
+            #print("Byte mismatch at position "+str(i)+": function byte "+str(func_bytes[i])+", signature byte "+str(signature_bytes[i]))
+            return False  # Mismatch found (wildcards are ignored)
+    
+    return True  # All bytes matched
+	
+	
+def matches_signature_num_fails(func_bytes, signature_bytes):
+    """
+    Compares the function's bytes to the signature with wildcards (byte_list containing -1).
+    """
+    #print("Matching function bytes:", list(func_bytes), "with signature:", signature_bytes)
+    failcount = 0
+    # Compare each byte of the function to the signature
+    for i in range(len(signature_bytes)):
+        if signature_bytes[i] != -1 and func_bytes[i] != signature_bytes[i]:
+            #print("Byte mismatch at position "+str(i)+": function byte "+str(func_bytes[i])+", signature byte "+str(signature_bytes[i]))
+            failcount = failcount +1
+    
+    return failcount  # All bytes matched
+
+
+	
+	
+	
+
+def python_to_java_byte_array(python_bytes):
+    """
+    Convert a Python bytearray (unsigned) to a Java byte[] (signed).
+    Values above 127 are converted to their signed counterparts.
+    """
+    java_bytes = zeros(len(python_bytes), 'b')  # Create a Java byte array of the same length
+    for i in range(len(python_bytes)):
+        value = python_bytes[i]
+        if value > 127:
+            value -= 256  # Convert to signed byte (Java)
+        java_bytes[i] = value
+    return java_bytes
+
+
+
+
+def find_or_create_namespace(class_name):
+    """
+    Finds or creates the namespace (class) with the given name.
+    """
+    symbol_table = currentProgram.getSymbolTable()
+
+    # Check if the namespace already exists
+    global_namespace = currentProgram.getGlobalNamespace()
+    namespace = symbol_table.getNamespace(class_name, global_namespace)
+    
+    if namespace is None:
+        try:
+            # Create the new namespace (class)
+            namespace = symbol_table.createNameSpace(global_namespace, class_name, SourceType.USER_DEFINED)
+            #print("Namespace " + class_name + " created.")
+        except InvalidInputException as e:
+            print("Error creating namespace " +class_name + "e: " + str(e))
+            return None
+    #else:
+        #print("Namespace " +class_name+ " already exists.")
+
+    return namespace
+
+def find_function_by_signature(byte_signature):
+    """
+    Finds the function by searching for the given byte signature in the program's memory.
+    """
+    memory = currentProgram.getMemory()
+    address = currentProgram.getMinAddress()
+    end_address = currentProgram.getMaxAddress()
+    
+    # Convert the byte signature from string to a byte array
+    byte_array = bytearray.fromhex(byte_signature)
+    
+    while address.compareTo(end_address) < 0:
+        try:
+            # Search for the byte sequence in memory
+            found_address = memory.findBytes(address, python_to_java_byte_array(byte_array), None, True, TaskMonitor.DUMMY)
+            if found_address is not None:
+                #print("Found function signature at "+str(found_address))
+                return found_address
+        except MemoryAccessException:
+            # Handle inaccessible memory regions
+            pass
+        # Increment address to continue search
+        address = address.add(1)
+    
+    print("No matching function found for signature {byte_signature}")
+    return None
+
+def create_function_in_namespace(class_name, function_name, address):
+    """
+    Creates a function at the specified address in the specified class/namespace.
+    """
+    global countfuncfails
+    global countfuncsucksex
+    if not isinstance(address, Address):
+		find_closest_function_address(address,function_name,class_name)
+		countfuncfails = countfuncfails +1
+		return None
+		#function_name = function_name + "???"
+		#if not isinstance(address, Address):
+		#	print("Address not found for: ",class_name ,":", function_name)
+		#	return None
+		#print("This is the right function? : ",class_name ,":", function_name)
+	
+    namespace = find_or_create_namespace(class_name)
+    if namespace is None:
+        print("Failed to create or find the namespace.")
+        return None
+
+    # Check if the function already exists at the given address
+    function = getFunctionAt(address)
+    #print("Function " +function_name+ " already exists ")
+    # Optionally, associate it with the namespace if it's not already
+    function.setParentNamespace(namespace)
+    function.setName(function_name,SourceType.IMPORTED)
+    #print("Function " +function_name+ " is now associated with namespace " +class_name)
+    countfuncsucksex = countfuncsucksex +1
+    return function
+
+
+def parse_zhl_file(file_path):
+    functions = []
+
+    with open(file_path, 'r') as file:
+        content = file.read().replace("unsigned ", "").replace("static ", "").replace("cleanup ", "").replace(" *", "*") #I dont care about this for now, and it makes the regex trickier, lol
+        
+        matches = patterns['function_signature'].findall(content)
+        
+        for match in matches:
+            address, callreg, returntype, classname, functionname, params = match
+            
+            if not callreg:
+                callreg = ""
+			
+            function_data = {
+                'address': address,
+                'callreg': callreg,
+                'returntype': returntype,
+                'classname': classname,
+                'functionname': functionname,
+                'params': params
+            }
+            functions.append(function_data)
+            currfuncparams = params.count(',')
+            if callreg == "__thiscall":
+                currfuncparams = currfuncparams +1
+            create_function_in_namespace(classname, functionname, find_function_address(address))
+            #print("Function " + classname + ":" + functionname + " processed.")
+			
+    return functions
+
+def parse_all_zhl_files():
+    all_functions = []
+    
+    # Traverse the current directory and find all .zhl files
+    for filename in os.listdir(zhlfunctionspath):
+        if filename.endswith('.zhl'):
+            functions = parse_zhl_file(zhlfunctionspath+"\\" + filename)
+            all_functions.extend(functions)
+    
+    # Output the result to a JSON file
+    #with open('functions.json', 'w') as json_file:
+     #   json.dump(all_functions, json_file, indent=4)
+
+#zhl func registering shenanigans
+
 
 if __name__ == "__main__":
 	fm = currentProgram.getFunctionManager()
 	fn = fm.getFunctionContaining(currentAddress)
-	if not fn:
-		printerr("Not in a function")
+
+	start_at = askChoice("makesig", "Action:", MAKE_SIG_AT.values(), MAKE_SIG_AT['fn'])
+	
+	# we currently don't expose min_length
+	# TODO: rework askChoice to use a custom panel with all options
+	
+	if start_at == MAKE_SIG_AT['zhlcheckup']:
+		parse_all_zhl_files()
+		global countfuncfails
+		global countfuncsucksex
+		print("Broken Function Sigs:", countfuncfails)
+		print("Functions Identified:", countfuncsucksex)
 	else:
-		start_at = askChoice("makesig", "Make sig at:", MAKE_SIG_AT.values(), MAKE_SIG_AT['fn'])
-		
-		# we currently don't expose min_length
-		# TODO: rework askChoice to use a custom panel with all options
+		if not fn:
+			printerr("Not in a function")
 		process(start_at, min_length = 1)
